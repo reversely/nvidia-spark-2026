@@ -1,0 +1,22 @@
+[project]
+name = "road-priority-algorithm"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = [
+    "requests>=2.32",
+    "pandas>=2.2",
+    "numpy>=1.26",
+    "scipy>=1.13",
+    "shapely>=2.0",
+    "folium>=0.17",
+    "geopandas>=0.14",
+    "scikit-learn>=1.4",
+    "statsmodels>=0.14",
+    "matplotlib>=3.8",
+    "seaborn>=0.13",
+    "jupyter>=1.0",
+    "ipykernel>=6.0",
+]
+
+[tool.uv]
+dev-dependencies = []
