@@ -9,6 +9,38 @@ from shapely.geometry import shape, Point
 
 BASE = "https://ckan0.cf.opendata.inter.prod-toronto.ca/api/3/action"
 
+# ── Data sources — traceable provenance ───────────────────────────────────────
+# Resource ids are resolved live against the CKAN API (print_provenance) so we
+# never silently depend on a stale hardcoded UUID. Public page for each dataset is
+# https://open.toronto.ca/dataset/<slug>/ ; licence is the Open Government Licence – Toronto.
+SOURCES = {
+    "traffic":      {"id": "6afa3b1f-f6a5-4235-8bd6-7568411c19f4", "role": "Dim 1 · traffic load"},
+    "ksi":          {"id": "9c9a9b60-95c1-4541-ad44-15c4a643aff9", "role": "Dim 2 · collisions (KSI)"},
+    "fire":         {"id": "9d1b7352-32ce-4af2-8681-595ce9e47b6e", "role": "Dim 3a · fire stations"},
+    "police":       {"id": "4afc3c66-5614-466a-b714-e8d6336fc6d3", "role": "Dim 3a · police facilities"},
+    "ltc":          {"id": "8316c8fb-1d08-45dc-b46f-257498ba6403", "role": "Dim 3b · long-term care"},
+    "school":       {"id": "02ef7447-54d9-4aa7-b76d-8ef8138ac546", "role": "Dim 3c · schools"},
+    "childcare":    {"id": "69403dde-a0b3-491d-9451-2338806a3bf0", "role": "Dim 3c · child care"},
+    "library":      {"id": "7420a950-e62b-41da-826c-32d31c46e8f8", "role": "Dim 3d · libraries"},
+    "recreation":   {"id": "e8cd0f4d-4910-42a0-81f9-cf8c2218753a", "role": "Dim 3d · parks & rec"},
+    "nbhd_geom":    {"id": "5e6095fc-1bef-4776-887c-28d37f722c51", "role": "Dim 4 · nbhd boundaries"},
+    "nbhd_profile": {"id": "7f8eee5e-85fb-415c-aef3-c3bd4998445f", "role": "Dim 4 · nbhd profiles"},
+    "centreline":   {"id": "ad296ebf-fca6-4e67-b3ce-48040a20e6cd", "role": "map · Toronto Centreline"},
+}
+src = lambda key: SOURCES[key]["id"]
+
+
+def print_provenance():
+    print("Data provenance (resolved from CKAN API):")
+    for key, meta in SOURCES.items():
+        try:
+            info = requests.get(f"{BASE}/resource_show", params={"id": meta["id"]}, timeout=20).json()["result"]
+            pkg = requests.get(f"{BASE}/package_show", params={"id": info["package_id"]}, timeout=20).json()["result"]
+            url = f"https://open.toronto.ca/dataset/{pkg.get('name', '')}/"
+            print(f"  {key:12} {meta['role']:26} {url}  [{pkg.get('license_id') or 'n/a'}; {info.get('format')}]")
+        except Exception as e:
+            print(f"  {key:12} {meta['role']:26} (provenance lookup failed: {type(e).__name__})")
+
 # =============================================================================
 # DATASET INVENTORY & ROLES
 # =============================================================================
@@ -126,8 +158,10 @@ def geom_to_latlon(df, geom_col="geometry"):
 # FETCH — Dimension 1: Traffic load
 # =============================================================================
 
+print_provenance()
+
 print("Fetching traffic counts…")
-traffic_df = pd.DataFrame(fetch_all("6afa3b1f-f6a5-4235-8bd6-7568411c19f4"))
+traffic_df = pd.DataFrame(fetch_all(src("traffic")))
 traffic_df["lat"] = pd.to_numeric(traffic_df["latitude"], errors="coerce")
 traffic_df["lon"] = pd.to_numeric(traffic_df["longitude"], errors="coerce")
 traffic_df["total_vehicle"] = pd.to_numeric(traffic_df["total_vehicle"], errors="coerce")
@@ -140,28 +174,33 @@ traffic_df = traffic_df.dropna(subset=["lat", "lon", "total_vehicle"]).reset_ind
 # =============================================================================
 
 print("Fetching collision data…")
-collision_df = pd.DataFrame(fetch_all("9c9a9b60-95c1-4541-ad44-15c4a643aff9"))
+collision_df = pd.DataFrame(fetch_all(src("ksi")))
 collision_df["lat"] = pd.to_numeric(collision_df["latitude"], errors="coerce")
 collision_df["lon"] = pd.to_numeric(collision_df["longitude"], errors="coerce")
 collision_df = collision_df.dropna(subset=["lat", "lon"]).reset_index(drop=True)
-collision_df["is_fatal"] = collision_df["acclass"].str.contains("Fatal", na=False).astype(int)
+# acclass is one of "Fatal Injury" / "Non-Fatal Injury" / "Property Damage Only".
+# Use an exact match — str.contains("Fatal") also matches "Non-Fatal Injury"
+# (substring), which would flag every injury collision as fatal.
+collision_df["is_fatal"] = (
+    collision_df["acclass"].str.strip().str.lower().eq("fatal injury").astype(int)
+)
 
 # =============================================================================
 # FETCH — Dimension 3a: Emergency services
 # =============================================================================
 
 print("Fetching fire station locations…")
-fire_df = geom_to_latlon(pd.DataFrame(fetch_all("9d1b7352-32ce-4af2-8681-595ce9e47b6e")))
+fire_df = geom_to_latlon(pd.DataFrame(fetch_all(src("fire"))))
 
 print("Fetching police facility locations…")
-police_df = geom_to_latlon(pd.DataFrame(fetch_all("4afc3c66-5614-466a-b714-e8d6336fc6d3")))
+police_df = geom_to_latlon(pd.DataFrame(fetch_all(src("police"))))
 
 # =============================================================================
 # FETCH — Dimension 3b: Vulnerable population care
 # =============================================================================
 
 print("Fetching long-term care locations…")
-ltc_raw = pd.DataFrame(fetch_all("8316c8fb-1d08-45dc-b46f-257498ba6403"))
+ltc_raw = pd.DataFrame(fetch_all(src("ltc")))
 ltc_raw["beds"] = pd.to_numeric(ltc_raw["BEDS"], errors="coerce").fillna(0)
 ltc_df = geom_to_latlon(ltc_raw)
 
@@ -170,11 +209,11 @@ ltc_df = geom_to_latlon(ltc_raw)
 # =============================================================================
 
 print("Fetching school locations…")
-school_raw = pd.DataFrame(fetch_all("02ef7447-54d9-4aa7-b76d-8ef8138ac546"))
+school_raw = pd.DataFrame(fetch_all(src("school")))
 school_df = geom_to_latlon(school_raw)
 
 print("Fetching licensed childcare centres…")
-childcare_raw = pd.DataFrame(fetch_all("69403dde-a0b3-491d-9451-2338806a3bf0"))
+childcare_raw = pd.DataFrame(fetch_all(src("childcare")))
 childcare_raw["capacity"] = pd.to_numeric(childcare_raw["TOTSPACE"], errors="coerce").fillna(0)
 childcare_df = geom_to_latlon(childcare_raw)
 
@@ -183,14 +222,14 @@ childcare_df = geom_to_latlon(childcare_raw)
 # =============================================================================
 
 print("Fetching library branch locations…")
-lib_raw = pd.DataFrame(fetch_all("7420a950-e62b-41da-826c-32d31c46e8f8"))
+lib_raw = pd.DataFrame(fetch_all(src("library")))
 lib_df = lib_raw.copy()
 lib_df["lat"] = pd.to_numeric(lib_df["Lat"], errors="coerce")
 lib_df["lon"] = pd.to_numeric(lib_df["Long"], errors="coerce")
 lib_df = lib_df.dropna(subset=["lat", "lon"]).reset_index(drop=True)
 
 print("Fetching community centres (from Parks & Recreation facilities)…")
-rec_raw = pd.DataFrame(fetch_all("e8cd0f4d-4910-42a0-81f9-cf8c2218753a"))
+rec_raw = pd.DataFrame(fetch_all(src("recreation")))
 cc_df = geom_to_latlon(rec_raw[rec_raw["TYPE"] == "Community Centre"].copy())
 
 # =============================================================================
@@ -198,7 +237,7 @@ cc_df = geom_to_latlon(rec_raw[rec_raw["TYPE"] == "Community Centre"].copy())
 # =============================================================================
 
 print("Fetching neighbourhood geometries…")
-nbhd_df = pd.DataFrame(fetch_all("5e6095fc-1bef-4776-887c-28d37f722c51"))
+nbhd_df = pd.DataFrame(fetch_all(src("nbhd_geom")))
 nbhd_shapes = []
 for _, row in nbhd_df.iterrows():
     try:
@@ -208,7 +247,7 @@ for _, row in nbhd_df.iterrows():
         pass
 
 print("Fetching neighbourhood profiles…")
-profile_df = pd.DataFrame(fetch_all("7f8eee5e-85fb-415c-aef3-c3bd4998445f"))
+profile_df = pd.DataFrame(fetch_all(src("nbhd_profile")))
 nbhd_cols = [
     c for c in profile_df.columns
     if c not in ["_id", "Category", "Topic", "Data Source", "Characteristic", "City of Toronto"]
@@ -217,11 +256,13 @@ density_row = profile_df[
     profile_df["Characteristic"].str.contains("Population density per square", na=False)
 ].head(1)
 if not density_row.empty:
-    nbhd_density = (
-        density_row[nbhd_cols].iloc[0]
-        .apply(pd.to_numeric, errors="coerce")
-        .dropna()
-    )
+    # Density values arrive as thousands-separated strings ("3,929"); pd.to_numeric
+    # without stripping the commas coerces every value to NaN, which silently zeroed
+    # out the entire density dimension (its 0.10 weight contributed nothing).
+    nbhd_density = pd.to_numeric(
+        density_row[nbhd_cols].iloc[0].astype(str).str.replace(",", "", regex=False),
+        errors="coerce",
+    ).dropna()
 else:
     nbhd_density = pd.Series(dtype=float)
 
@@ -272,11 +313,20 @@ traffic_score_raw = traffic_df["total_vehicle"].values * (1 + 3 * heavy_pct)
 
 print("Computing collision scores…")
 near_collisions  = int_tree.query_ball_tree(collision_tree, r=75)
-collision_counts = np.array([len(idx) for idx in near_collisions], dtype=float)
-fatal_counts     = np.array([
-    int(collision_df.iloc[idx]["is_fatal"].sum()) if idx else 0
-    for idx in near_collisions
-], dtype=float)
+
+# KSI is PERSON-level (~2.7 rows per collision), so dedupe collision_id to count
+# distinct COLLISIONS, not person-involvements. Fatal = distinct collisions whose
+# acclass is "Fatal Injury" (is_fatal is constant within a collision_id).
+def _coll_counts(idx):
+    if not idx:
+        return 0.0, 0.0
+    sub = collision_df.iloc[idx]
+    return (float(sub["collision_id"].nunique()),
+            float(sub.loc[sub["is_fatal"] == 1, "collision_id"].nunique()))
+
+_cc = [_coll_counts(idx) for idx in near_collisions]
+collision_counts = np.array([c for c, _ in _cc], dtype=float)
+fatal_counts     = np.array([f for _, f in _cc], dtype=float)
 collision_score_raw = collision_counts + 4 * fatal_counts
 
 
@@ -404,43 +454,138 @@ print(f"  Community centres:  {len(cc_df)}")
 # MAP
 # =============================================================================
 
-print("\nBuilding map…")
-m = folium.Map(location=[43.7, -79.4], zoom_start=12, tiles="CartoDB positron")
+import matplotlib              # continuous colour gradient for the road lines
+import branca.colormap as bcm  # gradient legend
 
-heat_data = scored[["lat", "lon", "priority_score"]].values.tolist()
-folium.plugins.HeatMap(
-    heat_data,
-    min_opacity=0.3,
-    max_val=1.0,
-    radius=22,
-    blur=18,
-    gradient={0.0: "green", 0.4: "yellow", 0.7: "orange", 1.0: "red"},
+# Render risk as a continuous gradient painted along the centreline network.
+# Each road segment inherits the priority score of its NEAREST scored intersection,
+# extrapolating the point-based score across the whole network (the "gradient").
+# Deterioration risk: the validated predictionmap "CrackWatch TO" model output,
+# calibrated forward-180-day pothole risk per Centreline SEGMENT (keyed CENTRELINE_ID).
+RISK_MAP_PATH = "../ground-truth/predictionmap/risk_map.csv"
+W_PRIORITY, W_RISK = 0.5, 0.5   # segment-composite blend: community priority vs deterioration risk
+
+print("\nFetching centreline network for the map…")
+tcl = pd.DataFrame(fetch_all(src("centreline")))
+
+# Keep road-carrying centrelines; drop rivers/trails/rail/hydro/shoreline/etc.
+_NON_ROAD = ("river", "creek", "trail", "walkway", "cycle", "hydro",
+             "ferry", "geostat", "rail", "shoreline")
+_desc = tcl["FEATURE_CODE_DESC"].fillna("").str.lower()
+tcl = tcl[~_desc.apply(lambda d: any(k in d for k in _NON_ROAD))].copy()
+
+
+def _line_coords(g):
+    if isinstance(g, str):
+        g = json.loads(g)
+    return g["coordinates"] if g.get("type") == "LineString" else None
+
+
+tcl["coords"] = tcl["geometry"].apply(_line_coords)
+tcl = tcl[tcl["coords"].apply(lambda c: c is not None and len(c) >= 2)].reset_index(drop=True)
+tcl["CENTRELINE_ID"] = pd.to_numeric(tcl["CENTRELINE_ID"], errors="coerce")
+
+# Nearest scored intersection for each segment (query at the segment midpoint)
+mids   = np.array([c[len(c) // 2] for c in tcl["coords"]])   # [lon, lat]
+seg_xy = to_local_xy(mids[:, 1], mids[:, 0])
+_, nn  = int_tree.query(seg_xy, k=1)                          # index into traffic_df / priority
+
+def _nrm(a):
+    lo, hi = float(np.nanmin(a)), float(np.nanmax(a))
+    return (a - lo) / (hi - lo) if hi > lo else np.zeros_like(a)
+
+our_norm = _nrm(priority[nn])   # our community/traffic/collision composite, 0-1
+
+# Join the validated deterioration risk (proba_high) by Centreline SEGMENT id.
+try:
+    _rm = pd.read_csv(RISK_MAP_PATH)
+    _risk = _rm.groupby("centreline_id")["proba_high"].mean().to_dict()
+    risk = np.array([_risk.get(int(c), np.nan) if pd.notna(c) else np.nan
+                     for c in tcl["CENTRELINE_ID"]], dtype=float)
+    _m = int(np.isfinite(risk).sum())
+    print(f"Deterioration risk joined: {_m:,}/{len(tcl):,} segments ({_m / len(tcl):.0%})  <- {RISK_MAP_PATH}")
+except FileNotFoundError:
+    risk = np.full(len(tcl), np.nan)
+    print(f"  (predictionmap risk_map not found at {RISK_MAP_PATH}; colouring by priority only)")
+
+# Segment composite: blend deterioration risk with our priority where risk exists.
+combined = np.where(np.isfinite(risk), W_PRIORITY * our_norm + W_RISK * risk, our_norm)
+seg_norm = _nrm(combined)
+seg_pct = seg_norm.argsort().argsort() / max(len(seg_norm) - 1, 1) * 100  # 0-100 percentile rank
+s_lo, s_hi = 0.0, 1.0
+
+cmap = matplotlib.colormaps["RdYlGn_r"]   # green (low) → yellow → orange → red (high)
+
+
+def _hex(v):
+    r, g, b, _ = cmap(float(v))
+    return f"#{int(r * 255):02x}{int(g * 255):02x}{int(b * 255):02x}"
+
+
+seg_hex = [_hex(v) for v in seg_norm]
+names, colls = traffic_df["location_name"].values, traffic_df["collision_count"].values
+fatals, vehs = traffic_df["fatal_count"].values, traffic_df["total_vehicle"].values
+seg_names = tcl["LINEAR_NAME_FULL"].fillna("").astype(str).values
+cids = tcl["CENTRELINE_ID"].values
+
+print("Building map…")
+m = folium.Map(location=[43.7, -79.4], zoom_start=12, tiles="CartoDB dark_matter")
+
+features = []
+for i, coords in enumerate(tcl["coords"]):
+    j = int(nn[i])
+    features.append({
+        "type": "Feature",
+        "geometry": {"type": "LineString",
+                     "coordinates": [[round(x, 5), round(y, 5)] for x, y in coords]},
+        "properties": {
+            "color": seg_hex[i],
+            "centreline_id": int(cids[i]) if pd.notna(cids[i]) else None,
+            "street": seg_names[i] or str(names[j]),
+            "priority": round(float(seg_norm[i]), 3),
+            "priority_pct": int(round(seg_pct[i])),
+            "risk_high": (round(float(risk[i]), 3) if np.isfinite(risk[i]) else None),
+            "nearest": str(names[j]),
+            "collisions": int(colls[j]),
+            "fatals": int(fatals[j]),
+            "vehicles": int(vehs[j]),
+        },
+    })
+
+folium.GeoJson(
+    {"type": "FeatureCollection", "features": features},
+    style_function=lambda f: {"color": f["properties"]["color"], "weight": 2.5, "opacity": 0.85},
+    highlight_function=lambda f: {"weight": 5, "opacity": 1.0},
+    tooltip=folium.GeoJsonTooltip(
+        fields=["street", "priority_pct", "vehicles"],
+        aliases=["Street", "Priority (percentile)", "Daily vehicles"],
+    ),
+    name="Road risk (gradient)",
 ).add_to(m)
 
-top100 = scored.head(100)
-for rank, (_, row) in enumerate(top100.iterrows(), 1):
-    folium.CircleMarker(
-        location=[row["lat"], row["lon"]],
-        radius=6,
-        color=score_to_hex(row["priority_score"]),
-        fill=True,
-        fill_opacity=0.85,
-        weight=1,
-        popup=folium.Popup(
-            f"<b>#{rank} {row['location_name']}</b><br>"
-            f"Priority: <b>{row['priority_score']:.3f}</b><br>"
-            f"Daily vehicles: {int(row['total_vehicle']):,}<br>"
-            f"Collisions nearby: {int(row['collision_count'])} ({int(row['fatal_count'])} fatal)<br>"
-            f"Impact factor: {row['score_impact']:.3f} "
-            f"(emergency: {int(row['n_emergency_services'])}, "
-            f"LTC beds: {int(row['ltc_beds_nearby'])}, "
-            f"schools: {int(row['n_schools'])}, "
-            f"childcare: {int(row['n_childcare'])}, "
-            f"libraries: {int(row['n_libraries'])}, "
-            f"community centres: {int(row['n_community_centres'])})",
-            max_width=320,
-        ),
-    ).add_to(m)
+legend = bcm.LinearColormap(
+    [_hex(t) for t in np.linspace(0, 1, 8)], vmin=s_lo, vmax=s_hi,
+    caption="Segment priority — community impact blended with deterioration risk (0-1)",
+)
+legend.add_to(m)
 
 m.save("road_priority_map.html")
-print("Map saved → road_priority_map.html")
+print(f"Map saved → road_priority_map.html  ({len(features):,} coloured road segments)")
+
+# ── Export a compact per-segment GeoJSON for the Cracked City app ─────────────
+# Popup shows Street · Priority (percentile) · Daily vehicles; `priority` (0-1) is
+# kept only so the map can colour the line. The app colours/labels from these.
+from shapely.geometry import LineString as _LS
+def _simp(coords, tol=0.0001):   # Douglas-Peucker (~11 m) — drops collinear vertices
+    if len(coords) <= 2:
+        return [[round(x, 5), round(y, 5)] for x, y in coords]
+    return [[round(x, 5), round(y, 5)] for x, y in _LS(coords).simplify(tol).coords]
+
+app_fc = {"type": "FeatureCollection", "features": [
+    {"type": "Feature",
+     "geometry": {"type": "LineString", "coordinates": _simp(f["geometry"]["coordinates"])},
+     "properties": {k: f["properties"][k] for k in ("street", "priority_pct", "vehicles")}}
+    for f in features]}
+with open("road_priority_segments.geojson", "w") as _fh:
+    json.dump(app_fc, _fh, separators=(",", ":"))   # compact: ~9.4 MB, under HF's 10 MB non-LFS limit
+print(f"App artifact saved → road_priority_segments.geojson  ({len(features):,} segments)")
