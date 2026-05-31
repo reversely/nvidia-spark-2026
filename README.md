@@ -34,8 +34,8 @@ resource IDs are resolved at runtime so the pipeline never depends on a stale UU
 | 311 Service Requests (Customer Initiated) | slug `311-service-requests-customer-initiated` (yearly ZIPs) | econ | [open.toronto.ca](https://open.toronto.ca/dataset/311-service-requests-customer-initiated/) |
 | City Wards (25-ward) | `737b29e0-8329-4260-b6af-21555ab24f28` | econ | [open.toronto.ca](https://open.toronto.ca/dataset/city-wards/) |
 
-External (non-CKAN): **CrackWatch TO** deterioration risk (`../ground-truth/predictionmap/risk_map.csv`,
-map blend) and **Ontario MTO Vehicle Population Data** ([data.ontario.ca](https://data.ontario.ca/dataset/vehicle-population-data), econ denominator).
+External (non-CKAN): **CrackWatch TO** deterioration risk — called from the dyno inference model
+(map blend) — and **Ontario MTO Vehicle Population Data** ([data.ontario.ca](https://data.ontario.ca/dataset/vehicle-population-data), econ denominator).
 
 ---
 
@@ -92,7 +92,7 @@ impact_score = (
 
 `priority_score`, the four component sub-scores (`score_traffic`, `score_collision`,
 `score_impact`, `score_density`), plus raw reference counts (`collision_count`, `fatal_count`,
-`n_schools`, `n_childcare`, `n_libraries`, `n_community_centres`, `n_emergency_services`,
+`n_schools`, `n_childcare`, `n_libraries`, `n_commuhynity_centres`, `n_emergency_services`,
 `ltc_beds_nearby`, `total_vehicle`, `total_pedestrian`).
 
 ### The map blends in a 5th source
@@ -106,10 +106,9 @@ W_PRIORITY, W_RISK = 0.5, 0.5
 combined = 0.5 * our_priority + 0.5 * deterioration_risk   # where risk exists
 ```
 
-`deterioration_risk` (`proba_high`) comes from an external file
-`../ground-truth/predictionmap/risk_map.csv` (the "CrackWatch TO" forward-180-day pothole-risk
-model, keyed by `CENTRELINE_ID`). If that file is absent, the map silently falls back to
-priority-only colouring. So the **map weighting differs from the intersection-score weighting**.
+`deterioration_risk` (`proba_high`) is called from the dyno inference model (the "CrackWatch TO"
+forward-180-day pothole-risk model, keyed by `CENTRELINE_ID`). So the **map weighting differs
+from the intersection-score weighting**.
 
 ---
 
